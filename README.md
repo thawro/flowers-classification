@@ -16,15 +16,15 @@ make train_model
 ```
 ### Screenshots from wandb
 train vs val metrics (loss, accuracy and fscore)
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_loss.png
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_accuracy.png
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_fscore.png
+![train_val_loss](plots/train_val_loss.png)
+![train_val_accuracy](plots/train_val_accuracy.png)
+![train_val_fscore](plots/train_val_fscore.png)
 
 confusion matrix (test set)
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/test_confusion_matrix.png
+![test_confusion_matrix](plots/test_confusion_matrix.png)
 
 example predictions (test set)
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/example_test_preds.png
+![example_test_preds](plots/example_test_preds.png)
 
 ## Gradio inference 
 ### Command
@@ -32,6 +32,6 @@ example predictions (test set)
 make gradio_inference
 ```
 ### Screenshots from gradio
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_dandelion.png
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_sunflower.png
-![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_crocus.png
+![gradio_dandelion](plots/gradio_dandelion.png)
+![gradio_sunflower](plots/gradio_sunflower.png)
+![gradio_crocus](plots/gradio_crocus.png)
