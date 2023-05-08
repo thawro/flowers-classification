@@ -15,12 +15,16 @@ Flower species classification using simple Deep Convolutional Neural Network (De
 make train_model
 ```
 ### Screenshots from wandb
-train vs val metrics
+train vs val metrics (loss, accuracy and fscore)
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_loss.png
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_accuracy.png
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/train_val_fscore.png
 
 confusion matrix (test set)
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/test_confusion_matrix.png
 
 example predictions (test set)
-
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/example_test_preds.png
 
 ## Gradio inference 
 ### Command
@@ -28,4 +32,6 @@ example predictions (test set)
 make gradio_inference
 ```
 ### Screenshots from gradio
-
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_dandelion.png
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_sunflower.png
+![alt text](https://github.com/thawro/flowers-classification/blob/main/plots/gradio_crocus.png
