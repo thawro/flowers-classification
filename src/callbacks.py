@@ -13,12 +13,12 @@ import plotly.figure_factory as ff
 def plot_multiclass_confusion_matrix(targets: torch.Tensor, probs: torch.Tensor, labels: List[str]):
     num_classes = len(labels)
     confmat = ConfusionMatrix(task="multiclass", num_classes=num_classes, normalize="pred")
-    cm = confmat(preds=probs, target=targets)
+    cm = confmat(preds=probs, target=targets).numpy()[::-1]
     fig = ff.create_annotated_heatmap(
-        cm.tolist()[::-1],
+        cm.tolist(),
         x=labels,
         y=labels[::-1],
-        annotation_text=cm.numpy().round(2),
+        annotation_text=cm.round(2),
         colorscale="Blues",
         showscale=False,
     )
