@@ -1,4 +1,4 @@
-from torchmetrics import F1Score, Accuracy, AUROC, MetricCollection
+from torchmetrics import F1Score, Accuracy, MetricCollection
 from typing import Dict, List
 from torch import nn
 import pytorch_lightning as pl
@@ -7,6 +7,7 @@ from typing import Literal
 import wandb
 from torch.nn.common_types import _size_2_t
 from collections import OrderedDict
+from data import NUM_CLASSES
 
 
 class FlowersModule(pl.LightningModule):
@@ -22,6 +23,7 @@ class FlowersModule(pl.LightningModule):
         self.weight_decay = weight_decay
         self.save_hyperparameters(ignore=["net"])
         self.outputs = {split: [] for split in ["train", "val", "test"]}
+        self.examples = {split: {} for split in ["train", "val", "test"]}
         self.logged_metrics = {}
 
         metrics = MetricCollection(
@@ -58,6 +60,11 @@ class FlowersModule(pl.LightningModule):
         images, targets = batch
         outputs = self._produce_outputs(images, targets)
         outputs["targets"] = targets
+        if stage == "test" and batch_idx == 0:
+            examples = {"images": images, "targets": targets}
+            examples.update(outputs)
+            self.examples[stage] = {k: v.cpu() for k, v in examples.items()}
+            del examples
         self.metrics[stage].update(outputs["probs"], targets)
         self.outputs[stage].append(outputs)
         return outputs["loss"].mean()
@@ -138,8 +145,6 @@ class CNNBlock(nn.Module):
         groups: int = 1,
         pool_kernel_size: _size_2_t = 1,
         pool_type: Literal["Max", "Avg"] = "Max",
-        use_batch_norm: bool = True,
-        dropout: float = 0,
         activation="ReLU",
     ):
         """
@@ -155,21 +160,13 @@ class CNNBlock(nn.Module):
                  Defaults to 1.
             pool_type (Literal["Max", "Avg"], optional): Pooling type. Defaults to "Max".
             use_batch_norm (bool, optional): Whether to use Batch Normalization (BN) after activation. Defaults to True.
-            dropout (float, optional): Dropout probability (used after BN). Defaults to 0.
             activation (str, optional): Type of activation function used before BN. Defaults to 0.
         """
         super().__init__()
-        if isinstance(pool_kernel_size, int):
-            self.use_pool = pool_kernel_size > 1
-        else:
-            self.use_pool = all(dim == 1 for dim in pool_kernel_size)
-        self.use_batch_norm = use_batch_norm
-        self.use_dropout = dropout > 0
         self.groups = groups
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.activation = activation
-        use_bias = not use_batch_norm
         self.conv = nn.Conv2d(
             in_channels,
             out_channels,
@@ -177,122 +174,19 @@ class CNNBlock(nn.Module):
             stride,
             padding,
             groups=groups,
-            bias=use_bias,
+            bias=False,
         )
-        if self.use_batch_norm:
-            self.batch_norm = nn.BatchNorm2d(out_channels)
+        self.batch_norm = nn.BatchNorm2d(out_channels)
 
-        self.linear = activation is None
-        if not self.linear:
-            self.activation_fn = getattr(nn, activation)()
-        if self.use_pool:
-            self.pool = getattr(nn, f"{pool_type}Pool2d")(pool_kernel_size, stride=2)
-
-        if self.use_dropout:
-            self.dropout = nn.Dropout2d(dropout)
+        self.activation_fn = getattr(nn, activation)()
+        self.pool = getattr(nn, f"{pool_type}Pool2d")(pool_kernel_size, stride=2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = self.conv(x)
-        if self.use_batch_norm:
-            out = self.batch_norm(out)
-        if not self.linear:
-            out = self.activation_fn(out)
-        if self.use_pool:
-            out = self.pool(out)
-        if self.use_dropout:
-            out = self.dropout(out)
+        out = self.batch_norm(out)
+        out = self.activation_fn(out)
+        out = self.pool(out)
         return out
-
-
-class FireBlock(nn.Module):
-    """FireBlock used to squeeze and expand convolutional channels"""
-
-    def __init__(
-        self,
-        in_channels: int,
-        squeeze_ratio: float,
-        expand_filters: int,
-        pct_3x3: float,
-        is_residual: bool = False,
-    ):
-        super().__init__()
-        s_1x1 = int(squeeze_ratio * expand_filters)
-        e_3x3 = int(expand_filters * pct_3x3)
-        e_1x1 = expand_filters - e_3x3
-        self.squeeze_1x1 = CNNBlock(in_channels, s_1x1, kernel_size=1, use_batch_norm=True)
-        self.expand_1x1 = CNNBlock(s_1x1, e_1x1, kernel_size=1, use_batch_norm=True)
-        self.expand_3x3 = CNNBlock(s_1x1, e_3x3, kernel_size=3, padding=1, use_batch_norm=True)
-        self.is_residual = is_residual
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        squeeze_out = self.squeeze_1x1(x)
-        expand_1x1_out = self.expand_1x1(squeeze_out)
-        expand_3x3_out = self.expand_3x3(squeeze_out)
-        out = torch.concat([expand_1x1_out, expand_3x3_out], dim=1)  # concat over channels
-        if self.is_residual:
-            return x + out
-        return out
-
-
-class SqueezeNet(nn.Module):
-    def __init__(
-        self,
-        in_channels: int = 3,
-        base_e: int = 128,
-        incr_e: int = 128,
-        pct_3x3: float = 0.5,
-        freq: int = 2,
-        SR: float = 0.125,
-        simple_bypass: bool = True,
-    ):
-        super().__init__()
-        self.in_channels = in_channels
-        self.base_e = base_e
-        self.incr_e = incr_e
-        self.pct_3x3 = pct_3x3
-        self.freq = freq
-        self.SR = SR
-
-        # architecture, fb - fire block
-        out_channels = 96
-        n_fire_blocks = 8
-        fb_expand_filters = [base_e + (incr_e * (i // freq)) for i in range(n_fire_blocks)]
-        fb_in_channels = [out_channels] + fb_expand_filters
-        is_residual = [False] + [(i % freq == 1 and simple_bypass) for i in range(1, n_fire_blocks)]
-        self.fb_in_channels = fb_in_channels
-        self.out_channels = fb_expand_filters[-1]
-        conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=7, stride=2)
-        maxpool1 = nn.MaxPool2d(kernel_size=3, stride=2)
-        fire2 = FireBlock(fb_in_channels[0], SR, fb_expand_filters[0], pct_3x3, is_residual[0])
-        fire3 = FireBlock(fb_in_channels[1], SR, fb_expand_filters[1], pct_3x3, is_residual[1])
-        fire4 = FireBlock(fb_in_channels[2], SR, fb_expand_filters[2], pct_3x3, is_residual[2])
-        maxpool4 = nn.MaxPool2d(kernel_size=3, stride=2)
-        fire5 = FireBlock(fb_in_channels[3], SR, fb_expand_filters[3], pct_3x3, is_residual[3])
-        fire6 = FireBlock(fb_in_channels[4], SR, fb_expand_filters[4], pct_3x3, is_residual[4])
-        fire7 = FireBlock(fb_in_channels[5], SR, fb_expand_filters[5], pct_3x3, is_residual[5])
-        fire8 = FireBlock(fb_in_channels[6], SR, fb_expand_filters[6], pct_3x3, is_residual[6])
-        maxpool8 = nn.MaxPool2d(kernel_size=3, stride=2)
-        fire9 = FireBlock(fb_in_channels[7], SR, fb_expand_filters[7], pct_3x3, is_residual[7])
-        dropout9 = nn.Dropout2d(p=0.5)
-        layers = [
-            ("conv1", conv1),
-            ("maxpool1", maxpool1),
-            ("fire2", fire2),
-            ("fire3", fire3),
-            ("fire4", fire4),
-            ("maxpool4", maxpool4),
-            ("fire5", fire5),
-            ("fire6", fire6),
-            ("fire7", fire7),
-            ("fire8", fire8),
-            ("maxpool8", maxpool8),
-            ("fire9", fire9),
-            ("dropout9", dropout9),
-        ]
-        self.net = nn.Sequential(OrderedDict(layers))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 
 class DeepCNN(nn.Module):
@@ -305,8 +199,6 @@ class DeepCNN(nn.Module):
         kernels: List[_size_2_t],
         pool_kernels: List[_size_2_t],
         pool_type: Literal["Max", "Avg"] = "Max",
-        use_batch_norm: bool = True,
-        dropout: float = 0,
         activation: str = "ReLU",
     ):
         """
@@ -318,8 +210,6 @@ class DeepCNN(nn.Module):
             pool_kernels (int | list[int]): Kernels of Pooling in CNN blocks.
                 If int is passed, then all layers use same pool kernel size.
             pool_type (Literal["Max", "Avg"], optional): Pooling type in CNN blocks. Defaults to "Max".
-            use_batch_norm (bool, optional): Whether to use BN in CNN blocks. Defaults to True.
-            dropout (float, optional): Dropout probability used in CNN blocks. Defaults to 0.
             activation (str, optional): Type of activation function used in CNN blocks. Defaults to 0.
         """
         super().__init__()
@@ -327,14 +217,10 @@ class DeepCNN(nn.Module):
         self.kernels = kernels
         self.pool_kernels = pool_kernels
         self.pool_type = pool_type
-        self.use_batch_norm = use_batch_norm
-        self.dropout = dropout
         self.activation = activation
         n_blocks = len(out_channels)
         fixed_params = dict(
             pool_type=pool_type,
-            use_batch_norm=use_batch_norm,
-            dropout=dropout,
             activation=activation,
         )
         if isinstance(kernels, int) or isinstance(kernels, tuple):
@@ -360,10 +246,13 @@ class DeepCNN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
+    @property
+    def name(self):
+        return "DeepCNN"
+
 
 def load_net() -> nn.Module:
-    # backbone = SqueezeNet()
-    backbone = DeepCNN(
+    backbone_net = DeepCNN(
         in_channels=3,
         out_channels=[16, 32, 64, 128],
         kernels=[3, 3, 3, 3],
@@ -371,9 +260,9 @@ def load_net() -> nn.Module:
     )
 
     return nn.Sequential(
-        backbone,
+        backbone_net,
         nn.AdaptiveAvgPool2d((1, 1)),
         nn.Flatten(1, -1),
-        nn.Linear(backbone.out_channels, 17),
+        nn.Linear(backbone_net.out_channels, NUM_CLASSES),
         nn.LogSoftmax(dim=1),
     )
