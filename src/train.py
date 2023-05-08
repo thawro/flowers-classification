@@ -2,21 +2,25 @@ from pathlib import Path
 from typing import List, Literal, Dict
 import scipy.io
 import numpy as np
-from torch import nn
-import torchvision
 from pytorch_lightning import seed_everything
 import pytorch_lightning as pl
 import torchvision.transforms as T
+import torch
+import wandb
 from pytorch_lightning.loggers.wandb import WandbLogger
-from pytorch_lightning.callbacks import RichProgressBar, EarlyStopping
-from data import FlowersDataModule, FlowersDataset
+from pytorch_lightning.callbacks import RichProgressBar, EarlyStopping, ModelCheckpoint
+
+from data import FlowersDataModule, FlowersDataset, MEAN_IMAGENET, STD_IMAGENET, LABELS
 from model import FlowersModule
+from callbacks import ConfusionMatrixLogger, ExamplePredictionsLogger
+
 
 DATA_PATH = Path("data/jpg")
 FILENAMES_PATH = DATA_PATH / "files.txt"
 
-MEAN_IMAGENET = [0.485, 0.456, 0.406]
-STD_IMAGENET = [0.229, 0.224, 0.225]
+NUM_EXAMPLES_PER_CLASS = 80
+
+MAX_EPOCHS = 150
 
 datasplits = scipy.io.loadmat("datasplits.mat")
 
@@ -39,26 +43,26 @@ if __name__ == "__main__":
 
     filenames = load_filenames(FILENAMES_PATH)
     filepaths = np.array([str(DATA_PATH / name) for name in filenames])
-    targets = np.arange(1360) // 80
+    targets = np.arange(len(filepaths)) // NUM_EXAMPLES_PER_CLASS
 
     train_idxs, val_idxs, test_idxs = load_idxs_from_datasplits(datasplits, split_idx=1)
 
     train_transform = T.Compose(
         [
+            T.Resize(256),
+            T.RandomCrop(224),
+            T.RandomHorizontalFlip(p=0.5),
             T.ToTensor(),
             T.Normalize(MEAN_IMAGENET, STD_IMAGENET),
-            T.Resize(256),
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomCrop(224),
         ]
     )
 
     inference_transform = T.Compose(
         [
-            T.ToTensor(),
-            T.Normalize(MEAN_IMAGENET, STD_IMAGENET),
             T.Resize(256),
             T.CenterCrop(224),
+            T.ToTensor(),
+            T.Normalize(MEAN_IMAGENET, STD_IMAGENET),
         ]
     )
 
@@ -76,19 +80,41 @@ if __name__ == "__main__":
         filepaths=test_filepaths, transform=inference_transform, targets=test_targets
     )
 
-    datamodule = FlowersDataModule(train_ds, val_ds, test_ds, batch_size=32)
-
-    net = torchvision.models.resnet18(pretrained=True)
-    net.fc = nn.Linear(512, 17)
+    datamodule = FlowersDataModule(train_ds, val_ds, test_ds, batch_size=64)
 
     model = FlowersModule()
+    name = model.net[0].name
+    model_path = f"models/{name}.pt"
 
-    callbacks = [RichProgressBar(), EarlyStopping(monitor="val/loss", patience=15)]
+    ckpt_callback = ModelCheckpoint(
+        dirpath="ckpts", filename="best", monitor="val/loss", save_last=False, save_top_k=1
+    )
+    callbacks = [
+        ckpt_callback,
+        RichProgressBar(),
+        EarlyStopping(monitor="val/loss", patience=15),
+        ConfusionMatrixLogger(classes=LABELS),
+        ExamplePredictionsLogger(classes=LABELS),
+    ]
 
-    logger = WandbLogger(name="test", project="flowers-classification")
+    logger = WandbLogger(name=name, project="flowers-classification")
 
     trainer = pl.Trainer(
-        accelerator="auto", callbacks=callbacks, logger=logger, log_every_n_steps=20
+        accelerator="auto",
+        callbacks=callbacks,
+        logger=logger,
+        log_every_n_steps=20,
+        max_epochs=MAX_EPOCHS,
+        deterministic=True,
     )
-
     trainer.fit(model, datamodule)
+
+    best_model = FlowersModule.load_from_checkpoint(ckpt_callback.best_model_path)
+    model_scripted = torch.jit.script(best_model.net, torch.rand((1, 3, 224, 224)))
+    model_scripted.save(model_path)
+    trainer.validate(best_model, datamodule)
+    trainer.test(best_model, datamodule)
+
+    wandb.save(model_path)
+
+    wandb.finish()
