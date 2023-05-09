@@ -15,12 +15,16 @@ Flower species classification using simple Deep Convolutional Neural Network (De
 make train_model
 ```
 ### Screenshots from wandb
-train vs val metrics
+train vs val metrics (loss, accuracy and fscore)
+![train_val_loss](plots/train_val_loss.png)
+![train_val_accuracy](plots/train_val_accuracy.png)
+![train_val_fscore](plots/train_val_fscore.png)
 
 confusion matrix (test set)
+![test_confusion_matrix](plots/test_confusion_matrix.png)
 
 example predictions (test set)
-
+![example_test_preds](plots/example_test_preds.png)
 
 ## Gradio inference 
 ### Command
@@ -28,4 +32,6 @@ example predictions (test set)
 make gradio_inference
 ```
 ### Screenshots from gradio
-
+![gradio_dandelion](plots/gradio_dandelion.png)
+![gradio_sunflower](plots/gradio_sunflower.png)
+![gradio_crocus](plots/gradio_crocus.png)
